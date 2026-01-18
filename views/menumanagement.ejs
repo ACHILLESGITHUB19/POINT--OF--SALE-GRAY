@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="/inventory.css">
+<title>Admin Dashboard</title>
+</head>
+<body>
+     <!-- NAVBAR - MOVED OUTSIDE dashboard-container -->
+  <nav class="navbar">
+    <div class="brandname">
+      <div class="logo">
+        <img src="/logo.png" alt="Logo" class="logo-img">
+      </div>
+      <h2>Gray Countryside Cafe</h2>
+    </div>
+    <div class="logout-container">
+      <button onclick="handleLogout()">Logout</button>
+    </div>
+  </nav>
+
+  <!-- Dashboard Container (Sidebar + Main Content) -->
+  <div class="dashboard-container">
+    <!-- Left Column: Dashboard Sidebar -->
+    <div class="sidebar">
+      <div class="search-section">
+        <input type="text" class="search" id="menuSearch" placeholder="Search menu items..." onkeyup="debounceSearch(this.value)">
+      </div>
+      
+      <h2>Dashboard</h2>
+      <ul class="dashboard-menu">
+       <li><a href="/admindashboard/dashboard" class="active"><i class="fas fa-home"></i> Dashboard</a></li>
+        <li><a href="/admindashboard/Inventory">Inventory</a></li>
+        <li><a href="/admindashboard/salesandreports">Sales Reports</a></li>
+        <li><a href="/admindashboard/orderhistory">Order History</a></li>
+        <li><a href="/admindashboard/addstaff">Add Staff</a></li>
+        <li><a href="/admindashboard/menumanagement">Menu Management</a></li>
+        <li><a href="/admindashboard/infosettings">Settings</a></li>
+      </ul>
+      <footer class="sidebar-footer">
+        &copy; 2026 For School Purposes Only. All rights reserved.
+      </footer>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="main-content">
+      
+      <!-- Menu MANAGEMENT SECTION -->
+      <div id="inventorySection" class="section-content active-section">
+        <div class="section-header">
+          <h2>Menu Management</h2>
+          <div class="inventory-controls">
+            <button class="btn-primary" onclick="showRestockModal()">
+              <i class="fas fa-plus"></i> Restock Products
+            </button>
+            <button class="btn-secondary" onclick="exportInventory()">
+              <i class="fas fa-download"></i> Export
+            </button>
+          </div>
+        </div>
+        
+        <div class="inventory-summary">
+          <div class="summary-card">
+            <h3>Total Products</h3>
+            <p id="totalInventoryProducts">0</p>
+          </div>
+          <div class="summary-card">
+            <h3>Low Stock</h3>
+            <p id="lowStockCount" class="warning">0</p>
+          </div>
+          <div class="summary-card">
+            <h3>Out of Stock</h3>
+            <p id="outOfStockCount" class="danger">0</p>
+          </div>
+          <div class="summary-card">
+            <h3>Total Value</h3>
+            <p id="inventoryValue">₱0.00</p>
+          </div>
+        </div>
+        
+        <div class="inventory-filters">
+          <div class="filter-group">
+            <label>Status:</label>
+            <select id="statusFilter" onchange="filterInventory()">
+              <option value="all">All Menu</option>
+              <option value="sufficient">Sufficient</option>
+              <option value="low">Low Stock</option>
+              <option value="critical">Critical</option>
+              <option value="out">Out of Stock</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>Category:</label>
+            <select id="categoryFilter" onchange="filterInventory()">
+              <option value="all">All Categories</option>
+              <option value="Meal">Rice Bowl Meals</option>
+              <option value="Hot Sizzlers">Hot Sizzlers</option>
+              <option value="Party Tray">Party Tray</option>
+              <option value="Drinks">Drinks</option>
+              <option value="Coffee">Coffee</option>
+               <option value="Milk Tea">Milk Tea</option>
+              <option value="Frappe">Frappe</option>
+              <option value="Snacks & Appetizer">Snacks & Appetizer</option>
+              <option value="Budget Meals Served with Rice">Budget Meals Served with Rice</option>
+              <option value="Specialties">Specialties</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <input type="text" id="inventorySearch" placeholder="Search inventory..." onkeyup="searchInventory(this.value)">
+          </div>
+        </div>
+        
+        <div class="inventory-grid" id="inventoryGrid">
+          <!-- Menu items will be loaded here -->
+        </div>
+      </div>
+      
+      <!-- Restock Modal -->
+      <div class="product-modal" id="restockModal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Restock Products</h3>
+            <button class="close-modal" onclick="closeRestockModal()">&times;</button>
+          </div>
+          <div class="modal-body" id="restockContent">
+            <!-- Form content will be injected here -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Edit Modal -->
+      <div class="product-modal" id="editModal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Edit Product</h3>
+            <button class="close-modal" onclick="closeEditModal()">&times;</button>
+          </div>
+          <div class="modal-body" id="editContent">
+            <!-- Form content will be injected here -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Delete Modal -->
+      <div class="product-modal" id="deleteModal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Delete Product</h3>
+            <button class="close-modal" onclick="closeDeleteModal()">&times;</button>
+          </div>
+          <div class="modal-body" id="deleteContent">
+            <!-- Confirmation content will be injected here -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Bulk Modal -->
+      <div class="product-modal" id="bulkModal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Bulk Operations</h3>
+            <button class="close-modal" onclick="closeBulkModal()">&times;</button>
+          </div>
+          <div class="modal-body" id="bulkContent">
+            <!-- Bulk content will be injected here -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Sales Modal -->
+      <div class="product-modal" id="daySalesModal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3 id="modalDayTitle">Sales Details</h3>
+            <button class="close-modal" onclick="closeModal()">&times;</button>
+          </div>
+          <div class="modal-body" id="salesDetails">
+            <!-- Sales details will be injected here -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+</body>
+</html>
+
+<script src="/script/menu.js"></script>
+

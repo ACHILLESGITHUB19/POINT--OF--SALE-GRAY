@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <link rel="stylesheet"  href="/settings.css">
+    <title>Settings</title>
+</head>
+<body>
+    <div class="dashboard-container">
+        <nav class="navbar">
+            <div class="brandname">
+                <img src="/logo.png" alt="Logo" class="logo-img">
+                <h2></h2>Gray Countryside Cafe</h2>
+            </div>
+            <div class="logout-container">
+                <button>Log Out</button>
+            </div>
+        </nav>
+
+        <aside class="sidebar">
+            <div class="search-section">
+                <input type="text" class="search" placeholder="Search...">
+            </div>
+            <h2>Menu</h2>
+            <ul class="dashboard-menu">
+        <li><a href="/admindashboard/dashboard" onclick="showSection('dashboard')" class="active"></i> Dashboard</a></li>
+        <li><a href="/admindashboard/Inventory">Inventory</a></li>
+        <li><a href="/admindashboard/salesandreports">Sales Reports</a></li>
+        <li><a href="/admindashboard/orderhistory">Order History</a></li>
+        <li><a href="/admindashboard/addstaff">Add Staff</a></li>
+        <li><a href="/admindashboard/menumanagement">Menu Management</a></li>
+        <li><a href="/admindashboard/infosettings">Settings</a></li>
+      </ul>
+            <div class="sidebar-footer">
+                © 2026 For School Purposes Only. All rights reserved.
+            </div>
+        </aside>
+
+       
+    </div>
+</body>
+</html>
+
+<script src="/script/settings.js"></script>

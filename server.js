@@ -33,7 +33,10 @@ const __dirname = path.dirname(__filename);
 // Connect to database
 await connectDB();
 
-// Middleware
+// ==================== GLOBAL VARIABLES ====================
+const adminClients = new Set();
+
+// ==================== MIDDLEWARE ====================
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
@@ -42,15 +45,7 @@ app.use('/images', express.static(path.join(__dirname, "images")));
 app.set("view engine", "ejs");
 app.set('views', path.join(__dirname, 'views'));
 
-// Routes
-app.use("/api/categories", categoryRoutes);
-app.use("/api/products", productRoutes);
-
-// Static pages
-const pages = ["login", "register", "order"];
-pages.forEach(page => {
-  app.get(`/${page.toLowerCase()}`, (req, res) => res.render(page));
-});
+// ==================== AUTHENTICATION MIDDLEWARE ====================
 
 // Authentication middleware
 const verifyToken = (req, res, next) => {
@@ -74,6 +69,128 @@ const verifyAdmin = (req, res, next) => {
   }
   next();
 };
+
+// ==================== REAL-TIME UPDATES (SSE) ====================
+
+// SSE endpoint for admin dashboard
+app.get('/api/admin/events', verifyToken, verifyAdmin, (req, res) => {
+  console.log('📡 Admin client connecting to real-time events...');
+  
+  // Set headers for SSE
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+
+  // Send initial connection message
+  res.write('data: {"type": "connected", "message": "Connected to real-time updates"}\n\n');
+
+  // Add client to set
+  const clientId = Date.now();
+  const client = {
+    id: clientId,
+    res: res
+  };
+  
+  adminClients.add(client);
+  console.log(`✅ Admin client ${clientId} connected. Total clients: ${adminClients.size}`);
+
+  // Remove client when connection closes
+  req.on('close', () => {
+    adminClients.delete(client);
+    console.log(`❌ Admin client ${clientId} disconnected. Remaining: ${adminClients.size}`);
+  });
+});
+
+// Function to broadcast events to all connected admin clients
+const broadcastToAdmins = (data) => {
+  if (adminClients.size === 0) {
+    console.log('⚠️ No admin clients connected to send event:', data.type);
+    return;
+  }
+  
+  const eventData = `data: ${JSON.stringify(data)}\n\n`;
+  console.log(`📤 Broadcasting ${data.type} to ${adminClients.size} admin clients`);
+  
+  adminClients.forEach(client => {
+    try {
+      client.res.write(eventData);
+      // Try to flush the data immediately
+      if (client.res.flush) {
+        client.res.flush();
+      }
+    } catch (error) {
+      console.error('❌ Error sending SSE to client:', error.message);
+      adminClients.delete(client);
+    }
+  });
+};
+
+// Function to send new order notification
+const sendOrderNotification = (order) => {
+  console.log('🆕 Sending new order notification:', order.orderNumber);
+  
+  broadcastToAdmins({
+    type: 'new_order',
+    data: {
+      id: order._id.toString(),
+      orderNumber: order.orderNumber || `ORD-${Date.now()}`,
+      total: order.total || 0,
+      type: order.type || 'Dine In',
+      paymentMethod: order.payment?.method || 'cash',
+      timestamp: new Date().toLocaleTimeString(),
+      items: order.items?.length || 0,
+      createdAt: order.createdAt || new Date()
+    },
+    message: `New order #${order.orderNumber} received!`
+  });
+
+  // Also send stats update after a short delay
+  setTimeout(() => {
+    updateStatsForAdmins();
+  }, 500);
+};
+
+// Function to update stats for admin clients
+const updateStatsForAdmins = async () => {
+  try {
+    const totalOrders = await Order.countDocuments();
+    const ordersToday = await Order.countDocuments({
+      createdAt: {
+        $gte: new Date(new Date().setHours(0, 0, 0, 0))
+      }
+    });
+    
+    const totalRevenueResult = await Order.aggregate([
+      { $group: { _id: null, total: { $sum: "$total" } } }
+    ]);
+    
+    const totalRevenue = totalRevenueResult[0]?.total || 0;
+
+    broadcastToAdmins({
+      type: 'stats_update',
+      data: {
+        totalOrders,
+        ordersToday,
+        totalRevenue
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error updating stats for admins:', error);
+  }
+};
+
+// ==================== ROUTES ====================
+app.use("/api/categories", categoryRoutes);
+app.use("/api/products", productRoutes);
+
+// Static pages
+const pages = ["login", "register", "order"];
+pages.forEach(page => {
+  app.get(`/${page.toLowerCase()}`, (req, res) => res.render(page));
+});
 
 // Home route
 app.get('/', (req, res) => {
@@ -261,6 +378,9 @@ app.post('/api/orders', async (req, res) => {
     
     const savedOrder = await order.save();
     console.log('Order saved to MongoDB:', savedOrder._id);
+    
+    // Send real-time notification to admin dashboard
+    sendOrderNotification(savedOrder);
     
     // Update product stock
     try {
@@ -610,8 +730,7 @@ app.get("/admindashboard", verifyToken, verifyAdmin, async (req, res) => {
     const products = await Product.find({}, "stock").lean();
     const totalStocks = products.reduce((sum, p) => sum + (p.stock || 0), 0);
     const totalOrders = await Order.countDocuments();
-    const totalCustomers = await User.countDocuments({ role: "staff" });
-
+    const totalCustomers = await User.countDocuments();
     res.render("admindashboard", { 
       user: req.user, 
       stats: { 
@@ -944,19 +1063,20 @@ app.use((err, req, res, next) => {
   }
 });
 
-// Start server
+// ==================== START SERVER ====================
 const PORT = process.env.PORT || 5050;
 
 const server = app.listen(PORT, () => {
-  console.log(`Server is running at http://localhost:${PORT}`);
+  console.log(`🚀 Server is running at http://localhost:${PORT}`);
+  console.log(`📡 Real-time SSE endpoint: http://localhost:${PORT}/api/admin/events`);
 });
 
 server.on('error', (error) => {
   if (error.code === 'EADDRINUSE') {
-    console.error(`Port ${PORT} is already in use. Please use a different port.`);
+    console.error(`❌ Port ${PORT} is already in use. Please use a different port.`);
     process.exit(1);
   } else {
-    console.error('Server error:', error);
+    console.error('❌ Server error:', error);
     process.exit(1);
   }
 });

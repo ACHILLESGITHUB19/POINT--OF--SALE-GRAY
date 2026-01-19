@@ -5,38 +5,54 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import path from "path";
 import { fileURLToPath } from 'url';
-import { connectDB, User, Product, Category, Order, Stats, MenuItem } from "./config/database.js";
+import { connectDB, User, Category } from "./config/database.js";
+import Stats from "./models/Stats.js";
+import MenuItem from "./models/Menuitems.js";
+import Product from "./models/Product.js";
+import Order from "./models/Order.js";
 import categoryRoutes from "./routes/categoryroute.js";
 import productRoutes from "./routes/productroute.js";
 
+// Dotenv config
 dotenv.config();
-if (!process.env.JWT_SECRET) {
-  throw new Error("JWT_SECRET not defined in .env");
-}
+
+// Validate required environment variables
+const requiredEnvVars = ['JWT_SECRET', 'MONGODB_URI'];
+requiredEnvVars.forEach(varName => {
+  if (!process.env[varName]) {
+    console.error(`ERROR: ${varName} not defined in .env file`);
+    process.exit(1);
+  }
+});
 
 const app = express();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Connect to database
 await connectDB();
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+// Middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
-app.use(express.static(path.join(process.cwd(), "public")));
-app.use('/images', express.static(path.join(process.cwd(), "images")));
+app.use(express.static(path.join(__dirname, "public")));
+app.use('/images', express.static(path.join(__dirname, "images")));
 app.set("view engine", "ejs");
-app.set('views', './views');
+app.set('views', path.join(__dirname, 'views'));
 
+// Routes
 app.use("/api/categories", categoryRoutes);
 app.use("/api/products", productRoutes);
 
+// Static pages
 const pages = ["login", "register", "order"];
 pages.forEach(page => {
   app.get(`/${page.toLowerCase()}`, (req, res) => res.render(page));
 });
 
+// Authentication middleware
 const verifyToken = (req, res, next) => {
   try {
     const token = req.cookies.token;
@@ -51,10 +67,20 @@ const verifyToken = (req, res, next) => {
   }
 };
 
+// Admin middleware
+const verifyAdmin = (req, res, next) => {
+  if (req.user.role !== "admin") {
+    return res.redirect("/staffdashboard");
+  }
+  next();
+};
+
+// Home route
 app.get('/', (req, res) => {
   res.redirect('/login');
 });
 
+// Register route
 app.post("/register", async (req, res) => {
   try {
     const referer = req.headers.referer || req.headers.referrer;
@@ -100,6 +126,7 @@ app.post("/register", async (req, res) => {
   }
 });
 
+// Login route
 app.post("/login", async (req, res) => {
   try {
     const { user, pass } = req.body;
@@ -140,7 +167,7 @@ app.post("/login", async (req, res) => {
       maxAge: 1000 * 60 * 60 * 24 * 365
     });
 
-    // Automatically redirect based on user role from database
+    // Redirect based on user role
     if (existingUser.role === "admin") {
       return res.redirect("/admindashboard");
     } else {
@@ -155,6 +182,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
+// Order API
 app.post('/api/orders', async (req, res) => {
   try {
     const orderData = req.body;
@@ -234,6 +262,7 @@ app.post('/api/orders', async (req, res) => {
     const savedOrder = await order.save();
     console.log('Order saved to MongoDB:', savedOrder._id);
     
+    // Update product stock
     try {
       for (const item of orderData.items) {
         if (item.id) {
@@ -246,20 +275,6 @@ app.post('/api/orders', async (req, res) => {
       }
     } catch (stockError) {
       console.error('Stock update error (non-critical):', stockError);
-    }
-    
-    try {
-      if (Stats && typeof Stats.updateStats === 'function') {
-        await Stats.updateStats({
-          ...orderData,
-          payment: {
-            method: paymentMethod,
-            amountPaid: amountPaid
-          }
-        });
-      }
-    } catch (statsError) {
-      console.error('Stats update error (non-critical):', statsError);
     }
     
     res.json({ 
@@ -279,53 +294,49 @@ app.post('/api/orders', async (req, res) => {
   }
 });
 
+// Stats API
 app.get('/api/stats', async (req, res) => {
   try {
-    if (Stats && typeof Stats.getDashboardStats === 'function') {
-      const stats = await Stats.getDashboardStats();
-      return res.json(stats);
-    } else {
-      const totalOrders = await Order.countDocuments();
-      const ordersToday = await Order.countDocuments({
-        createdAt: {
-          $gte: new Date(new Date().setHours(0, 0, 0, 0))
-        }
-      });
-      
-      const totalRevenueResult = await Order.aggregate([
-        { $group: { _id: null, total: { $sum: "$total" } } }
-      ]);
-      
-      const totalRevenue = totalRevenueResult[0]?.total || 0;
-      
-      const paymentStats = await Order.aggregate([
-        { $group: { _id: "$payment.method", count: { $sum: 1 } } }
-      ]);
-      
-      const paymentStatsObj = {
-        cash: 0,
-        wallet: 0
-      };
-      
-      paymentStats.forEach(stat => {
-        if (stat._id && (stat._id === "cash" || stat._id === "wallet")) {
-          paymentStatsObj[stat._id] = stat.count;
-        }
-      });
-      
-      const recentOrders = await Order.find()
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .lean();
-      
-      res.json({
-        totalOrders,
-        ordersToday,
-        totalRevenue,
-        paymentStats: paymentStatsObj,
-        recentOrders
-      });
-    }
+    const totalOrders = await Order.countDocuments();
+    const ordersToday = await Order.countDocuments({
+      createdAt: {
+        $gte: new Date(new Date().setHours(0, 0, 0, 0))
+      }
+    });
+    
+    const totalRevenueResult = await Order.aggregate([
+      { $group: { _id: null, total: { $sum: "$total" } } }
+    ]);
+    
+    const totalRevenue = totalRevenueResult[0]?.total || 0;
+    
+    const paymentStats = await Order.aggregate([
+      { $group: { _id: "$payment.method", count: { $sum: 1 } } }
+    ]);
+    
+    const paymentStatsObj = {
+      cash: 0,
+      wallet: 0
+    };
+    
+    paymentStats.forEach(stat => {
+      if (stat._id && (stat._id === "cash" || stat._id === "wallet")) {
+        paymentStatsObj[stat._id] = stat.count;
+      }
+    });
+    
+    const recentOrders = await Order.find()
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+    
+    res.json({
+      totalOrders,
+      ordersToday,
+      totalRevenue,
+      paymentStats: paymentStatsObj,
+      recentOrders
+    });
   } catch (error) {
     console.error('Stats fetch error:', error);
     res.status(500).json({ 
@@ -336,27 +347,20 @@ app.get('/api/stats', async (req, res) => {
 
 // ==================== MENU MANAGEMENT ROUTES ====================
 
-// Get all menu items with search and filters
-app.get("/api/menu", verifyToken, async (req, res) => {
+// Get all menu items
+app.get("/api/menu", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
-
     const { category, search, status } = req.query;
     let query = {};
 
-    // Filter by category
     if (category && category !== 'all') {
       query.category = category;
     }
 
-    // Filter by status
     if (status && status !== 'all') {
       query.status = status;
     }
 
-    // Search by name
     if (search) {
       query.name = { $regex: search, $options: 'i' };
     }
@@ -373,12 +377,8 @@ app.get("/api/menu", verifyToken, async (req, res) => {
 });
 
 // Get single menu item
-app.get("/api/menu/:id", verifyToken, async (req, res) => {
+app.get("/api/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
-
     const item = await MenuItem.findById(req.params.id);
     
     if (!item) {
@@ -399,15 +399,10 @@ app.get("/api/menu/:id", verifyToken, async (req, res) => {
 });
 
 // Add new menu item
-app.post("/api/menu", verifyToken, async (req, res) => {
+app.post("/api/menu", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
-
     const { name, price, category } = req.body;
 
-    // Validation
     if (!name || !price || !category) {
       return res.status(400).json({ 
         success: false, 
@@ -415,7 +410,6 @@ app.post("/api/menu", verifyToken, async (req, res) => {
       });
     }
 
-    // Check if item already exists (case insensitive)
     const existingItem = await MenuItem.findOne({ 
       name: { $regex: new RegExp(`^${name}$`, 'i') } 
     });
@@ -427,7 +421,6 @@ app.post("/api/menu", verifyToken, async (req, res) => {
       });
     }
 
-    // Create new menu item
     const newItem = new MenuItem({
       name,
       price: parseFloat(price),
@@ -460,15 +453,10 @@ app.post("/api/menu", verifyToken, async (req, res) => {
 });
 
 // Update menu item
-app.put("/api/menu/:id", verifyToken, async (req, res) => {
+app.put("/api/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
-
     const { name, price, category, status } = req.body;
 
-    // Find and update item
     const updatedItem = await MenuItem.findByIdAndUpdate(
       req.params.id,
       { 
@@ -511,12 +499,8 @@ app.put("/api/menu/:id", verifyToken, async (req, res) => {
 });
 
 // Delete menu item
-app.delete("/api/menu/:id", verifyToken, async (req, res) => {
+app.delete("/api/menu/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
-
     const deletedItem = await MenuItem.findByIdAndDelete(req.params.id);
 
     if (!deletedItem) {
@@ -540,12 +524,8 @@ app.delete("/api/menu/:id", verifyToken, async (req, res) => {
 });
 
 // Get menu categories
-app.get("/api/menu/categories/all", verifyToken, async (req, res) => {
+app.get("/api/menu/categories/all", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
-
     const categories = [
       'Rice Meals',
       'Sizzling',
@@ -572,67 +552,8 @@ app.get("/api/menu/categories/all", verifyToken, async (req, res) => {
 
 // ==================== END MENU MANAGEMENT ROUTES ====================
 
-async function initializeDatabase() {
-  try {
-    const categoryCount = await Category.countDocuments();
-    
-    if (categoryCount === 0) {
-      console.log("Initializing database with default categories...");
-      
-      const defaultCategories = [
-        "Rice", "Sizzling", "Party", "Drink", "Cafe", "Milk", "Frappe", 
-        "Snack & Appetizer", "Budget Meals Served with Rice", "Specialties"
-      ];
-      
-      for (const catName of defaultCategories) {
-        await Category.findOneAndUpdate(
-          { name: catName },
-          { $setOnInsert: { name: catName } },
-          { upsert: true, new: true }
-        );
-      }
-      
-      console.log("Default categories created.");
-    }
-    
-    const adminCount = await User.countDocuments({ role: "admin" });
-    
-    if (adminCount === 0) {
-      const adminUser = new User({
-        username: "admin",
-        password: bcrypt.hashSync("admin123", 10),
-        role: "admin",
-        status: "active"
-      });
-      
-      await adminUser.save();
-      console.log("Default admin user created: admin / admin123");
-    }
-    
-    const staffCount = await User.countDocuments({ role: "staff" });
-    
-    if (staffCount === 0) {
-      const staffUser = new User({
-        username: "staff",
-        password: bcrypt.hashSync("staff123", 10),
-        role: "staff",
-        status: "active"
-      });
-      await staffUser.save();
-      console.log("Default staff user created: staff / staff123");
-    }
-    
-    // REMOVED: Default products and menu items initialization
-    // Database will start empty
-    
-  } catch (error) {
-    console.error("Error initializing database:", error);
-  }
-}   
-
-await initializeDatabase();
-
-app.get('/api/products', async (req, res) => {
+// Get all products (for staff dashboard)
+app.get("/api/all-products", async (req, res) => {
   try {
     const products = await Product.find()
       .populate('category', 'name')
@@ -656,7 +577,8 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-app.post('/api/products/:id/image', async (req, res) => {
+// Update product image
+app.post('/api/products/:id/image', verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { image } = req.body;
@@ -680,9 +602,9 @@ app.post('/api/products/:id/image', async (req, res) => {
   }
 });
 
-app.get("/admindashboard", verifyToken, async (req, res) => {
-  if (req.user.role !== "admin") return res.redirect("/staffdashboard");
+// ==================== ADMIN DASHBOARD ROUTES ====================
 
+app.get("/admindashboard", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const totalProducts = await Product.countDocuments();
     const products = await Product.find({}, "stock").lean();
@@ -713,9 +635,7 @@ app.get("/admindashboard", verifyToken, async (req, res) => {
   }
 });
 
-app.get("/admindashboard/dashboard", verifyToken, async (req, res) => {
-  if (req.user.role !== "admin") return res.redirect("/staffdashboard");
-
+app.get("/admindashboard/dashboard", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const totalOrders = await Order.countDocuments();
     const totalProducts = await Product.countDocuments();
@@ -746,33 +666,30 @@ app.get("/admindashboard/dashboard", verifyToken, async (req, res) => {
   }
 });
 
-app.get("/admindashboard/inventory", (req, res) => {
+app.get("/admindashboard/inventory", verifyToken, verifyAdmin, (req, res) => {
   res.render("Inventory");
 });
 
-app.get("/admindashboard/addstaff", (req, res) => {
+app.get("/admindashboard/addstaff", verifyToken, verifyAdmin, (req, res) => {
   res.render("addstaff");
 });
 
-app.get("/admindashboard/salesandreports", (req, res) => {
+app.get("/admindashboard/salesandreports", verifyToken, verifyAdmin, (req, res) => {
   res.render("salesandreports", {
     title: "Sales & Reports"
   });
 });
 
-app.get("/admindashboard/infosettings", (req, res) => {
+app.get("/admindashboard/infosettings", verifyToken, verifyAdmin, (req, res) => {
   res.render("infosettings");
 });
 
-app.get("/admindashboard/orderhistory", (req, res) => {
+app.get("/admindashboard/orderhistory", verifyToken, verifyAdmin, (req, res) => {
   res.render("orderhistory");
 });
 
-app.get("/admindashboard/menumanagement", verifyToken, async (req, res) => {
-  if (req.user.role !== "admin") return res.redirect("/staffdashboard");
-  
+app.get("/admindashboard/menumanagement", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    // Get menu items for initial load
     const menuItems = await MenuItem.find().sort({ createdAt: -1 }).limit(50);
     
     res.render("menumanagement", {
@@ -788,6 +705,7 @@ app.get("/admindashboard/menumanagement", verifyToken, async (req, res) => {
   }
 });
 
+// Staff dashboard
 app.get("/staffdashboard", verifyToken, async (req, res, next) => {
   try {
     if (req.user.role !== "staff") return res.redirect("/admindashboard");
@@ -809,11 +727,13 @@ app.get("/staffdashboard", verifyToken, async (req, res, next) => {
   }
 });
 
+// Logout
 app.get("/logout", (req, res) => {
   res.clearCookie("token");
   res.redirect("/login");
 });
 
+// Print receipt
 app.post("/printreceipt", async (req, res, next) => {
   try {
     const { cart, orderType, payment } = req.body;
@@ -838,12 +758,8 @@ app.post("/printreceipt", async (req, res, next) => {
 
 // ==================== USER MANAGEMENT ROUTES ====================
 
-app.get("/api/users", verifyToken, async (req, res) => {
+app.get("/api/users", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
     const search = req.query.search || "";
     const query = search
       ? { username: { $regex: search, $options: "i" } }
@@ -860,12 +776,8 @@ app.get("/api/users", verifyToken, async (req, res) => {
   }
 });
 
-app.get("/api/users/:id", verifyToken, async (req, res) => {
+app.get("/api/users/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
     const user = await User.findById(req.params.id).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
 
@@ -875,12 +787,8 @@ app.get("/api/users/:id", verifyToken, async (req, res) => {
   }
 });
 
-app.put("/api/users/:id", verifyToken, async (req, res) => {
+app.put("/api/users/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
     const { username, password, role } = req.body;
     const updateData = { username, role };
 
@@ -914,12 +822,8 @@ app.put("/api/users/:id", verifyToken, async (req, res) => {
   }
 });
 
-app.put("/api/users/:id/status", verifyToken, async (req, res) => {
+app.put("/api/users/:id/status", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
     const { status } = req.body;
 
     if (!["active", "inactive"].includes(status)) {
@@ -943,12 +847,8 @@ app.put("/api/users/:id/status", verifyToken, async (req, res) => {
   }
 });
 
-app.delete("/api/users/:id", verifyToken, async (req, res) => {
+app.delete("/api/users/:id", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
     if (req.params.id === req.user.id) {
       return res.status(400).json({ message: "Cannot delete your own account" });
     }
@@ -964,12 +864,8 @@ app.delete("/api/users/:id", verifyToken, async (req, res) => {
   }
 });
 
-app.post("/api/users/create", verifyToken, async (req, res) => {
+app.post("/api/users/create", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
     const { username, password, role } = req.body;
 
     if (!username || !password) {
@@ -1007,12 +903,9 @@ app.post("/api/users/create", verifyToken, async (req, res) => {
   }
 });
 
-app.get("/api/orders", verifyToken, async (req, res) => {
+// Orders API for admin
+app.get("/api/orders", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "Access denied" });
-    }
-
     const orders = await Order.find()
       .sort({ createdAt: -1 })
       .limit(50)
@@ -1025,14 +918,62 @@ app.get("/api/orders", verifyToken, async (req, res) => {
   }
 });
 
-app.use((req, res, next) => {
-  res.status(404).send("Page not found");
+// ==================== BASIC ERROR HANDLING ====================
+
+// Basic 404 handler
+app.use((req, res) => {
+  if (req.accepts('html')) {
+    res.redirect('/login');
+  } else if (req.accepts('json')) {
+    res.status(404).json({ error: 'Not found' });
+  } else {
+    res.status(404).type('txt').send('Not found');
+  }
 });
 
+// Basic error handler
 app.use((err, req, res, next) => {
-  console.error("GLOBAL ERROR:", err);
-  res.status(500).json({ status: "error", message: err.message });
+  console.error('Error:', err.message);
+  
+  if (req.accepts('html')) {
+    res.redirect('/login');
+  } else if (req.accepts('json')) {
+    res.status(500).json({ error: 'Server error' });
+  } else {
+    res.status(500).type('txt').send('Server error');
+  }
 });
 
+// Start server
 const PORT = process.env.PORT || 5050;
-app.listen(PORT, () => console.log(`Server is running at http://localhost:${PORT}`));
+
+const server = app.listen(PORT, () => {
+  console.log(`Server is running at http://localhost:${PORT}`);
+});
+
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use. Please use a different port.`);
+    process.exit(1);
+  } else {
+    console.error('Server error:', error);
+    process.exit(1);
+  }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    process.exit(0);
+  });
+});

@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import path from "path";
 import { fileURLToPath } from 'url';
+import mongoose from "mongoose";
 import { connectDB, User, Category } from "./config/database.js";
 import Stats from "./models/Stats.js";
 import MenuItem from "./models/Menuitems.js";
@@ -163,6 +164,34 @@ const updateStatsForAdmins = async () => {
       }
     });
     
+    // For customer counting: Each unique customerId counts as one customer
+    // If customerId is null or doesn't exist, each order is counted as a unique customer
+    const customerStats = await Order.aggregate([
+      { 
+        $match: { 
+          customerId: { $ne: null, $exists: true } 
+        } 
+      },
+      { 
+        $group: { 
+          _id: "$customerId" 
+        } 
+      },
+      { 
+        $count: "total" 
+      }
+    ]);
+    
+    // Count orders without customerId (these count as individual customers)
+    const ordersWithoutCustomerId = await Order.countDocuments({
+      $or: [
+        { customerId: null },
+        { customerId: { $exists: false } }
+      ]
+    });
+    
+    const totalCustomers = (customerStats[0]?.total || 0) + ordersWithoutCustomerId;
+    
     const totalRevenueResult = await Order.aggregate([
       { $group: { _id: null, total: { $sum: "$total" } } }
     ]);
@@ -174,6 +203,7 @@ const updateStatsForAdmins = async () => {
       data: {
         totalOrders,
         ordersToday,
+        totalCustomers,
         totalRevenue
       }
     });
@@ -299,7 +329,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// Order API
+// Order API - FIXED: Generate a unique customer ID from session or use default
 app.post('/api/orders', async (req, res) => {
   try {
     const orderData = req.body;
@@ -352,6 +382,12 @@ app.post('/api/orders', async (req, res) => {
     });
     const orderNumber = `ORD-${dateStr}-${(orderCount + 1).toString().padStart(3, '0')}`;
     
+    // FIX: Generate customerId based on session or use null
+    // This allows each order to count as a unique customer if no session tracking
+    const customerId = orderData.sessionId ? 
+      new mongoose.Types.ObjectId(orderData.sessionId) : 
+      null;
+    
     const order = new Order({
       orderNumber,
       items: orderData.items.map(item => ({
@@ -373,7 +409,9 @@ app.post('/api/orders', async (req, res) => {
       },
       type: orderData.type,
       status: "completed",
-      notes: orderData.notes || ""
+      notes: orderData.notes || "",
+      // Store customerId (can be null if no session)
+      customerId: customerId
     });
     
     const savedOrder = await order.save();
@@ -414,7 +452,7 @@ app.post('/api/orders', async (req, res) => {
   }
 });
 
-// Stats API
+// Stats API - FIXED with proper customer counting logic
 app.get('/api/stats', async (req, res) => {
   try {
     const totalOrders = await Order.countDocuments();
@@ -423,6 +461,35 @@ app.get('/api/stats', async (req, res) => {
         $gte: new Date(new Date().setHours(0, 0, 0, 0))
       }
     });
+    
+    // FIX: Count unique customers correctly
+    // Orders with customerId are grouped, orders without customerId count as individual customers
+    const customerStats = await Order.aggregate([
+      { 
+        $match: { 
+          customerId: { $ne: null, $exists: true } 
+        } 
+      },
+      { 
+        $group: { 
+          _id: "$customerId" 
+        } 
+      },
+      { 
+        $count: "total" 
+      }
+    ]);
+    
+    // Count orders without customerId (these count as individual customers)
+    const ordersWithoutCustomerId = await Order.countDocuments({
+      $or: [
+        { customerId: null },
+        { customerId: { $exists: false } }
+      ]
+    });
+    
+    // Total customers = unique customerIds + orders without customerId
+    const totalCustomers = (customerStats[0]?.total || 0) + ordersWithoutCustomerId;
     
     const totalRevenueResult = await Order.aggregate([
       { $group: { _id: null, total: { $sum: "$total" } } }
@@ -453,6 +520,7 @@ app.get('/api/stats', async (req, res) => {
     res.json({
       totalOrders,
       ordersToday,
+      totalCustomers,
       totalRevenue,
       paymentStats: paymentStatsObj,
       recentOrders
@@ -722,15 +790,40 @@ app.post('/api/products/:id/image', verifyToken, async (req, res) => {
   }
 });
 
-// ==================== ADMIN DASHBOARD ROUTES ====================
-
+// Admin Dashboard Route - FIXED with correct customer counting
 app.get("/admindashboard", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const totalProducts = await Product.countDocuments();
     const products = await Product.find({}, "stock").lean();
     const totalStocks = products.reduce((sum, p) => sum + (p.stock || 0), 0);
     const totalOrders = await Order.countDocuments();
-    const totalCustomers = await User.countDocuments();
+    
+    // FIX: Count customers correctly
+    const customerStats = await Order.aggregate([
+      { 
+        $match: { 
+          customerId: { $ne: null, $exists: true } 
+        } 
+      },
+      { 
+        $group: { 
+          _id: "$customerId" 
+        } 
+      },
+      { 
+        $count: "total" 
+      }
+    ]);
+    
+    const ordersWithoutCustomerId = await Order.countDocuments({
+      $or: [
+        { customerId: null },
+        { customerId: { $exists: false } }
+      ]
+    });
+    
+    const totalCustomers = (customerStats[0]?.total || 0) + ordersWithoutCustomerId;
+
     res.render("admindashboard", { 
       user: req.user, 
       stats: { 
@@ -754,11 +847,38 @@ app.get("/admindashboard", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
+// Dashboard Route - FIXED with correct customer counting
 app.get("/admindashboard/dashboard", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const totalOrders = await Order.countDocuments();
     const totalProducts = await Product.countDocuments();
-    const totalCustomers = await User.countDocuments({ role: "staff" });
+    
+    // FIX: Count customers correctly
+    const customerStats = await Order.aggregate([
+      { 
+        $match: { 
+          customerId: { $ne: null, $exists: true } 
+        } 
+      },
+      { 
+        $group: { 
+          _id: "$customerId" 
+        } 
+      },
+      { 
+        $count: "total" 
+      }
+    ]);
+    
+    const ordersWithoutCustomerId = await Order.countDocuments({
+      $or: [
+        { customerId: null },
+        { customerId: { $exists: false } }
+      ]
+    });
+    
+    const totalCustomers = (customerStats[0]?.total || 0) + ordersWithoutCustomerId;
+    
     const totalRevenueResult = await Order.aggregate([
       { $group: { _id: null, total: { $sum: "$total" } } }
     ]);
